@@ -7,24 +7,30 @@
 <sect1 xmlns="http://docbook.org/ns/docbook"  xml:id="sec-memory-protection"
     xmlns:xi="http://www.w3.org/2001/XInclude"
     xmlns:xlink="http://www.w3.org/1999/xlink" version="5.0">
-        <title>Tuning Workload Memory Protection (DRAFT)</title>
-    <warning>
-        <para>
-            This is a draft and may not be published or imparted outside &suse;
-            or &sap;! The methods described here should be considered a beta
-            version and can change in the final release. No extensive testing
-            has been done yet. Do not use them on a production system!
-        </para>
-    </warning>
-
-    <para>Workload Memory Protection (WMP) aims not only to be a replacement
-        for the page cache limit, but also provides further protection. It
-        puts &sap; processes into a dedicated <literal>cgroup</literal> and protects their
-        allocated memory from being swapped out from any memory pressure
-        outside that &sap; cgroup. This includes growth of the page cache, as well
-        as other forms of memory consumption. The limit of allocated memory
-        which should not be swapped out has to be configured
-        manually.
+    <title>Tuning Workload Memory Protection</title>
+    <para>
+        Keeping SAP applications in physical memory is essential for their performance.
+        With &productname; 11 SP1 onwards and &productname; 12 the Page Cache Limit
+        prevented a swap out to disk by a growing page cache.
+        In &productname; 15 the Page Cache Limit has been replaced with the more
+        advanced Workload Memory Protection.
+    </para>
+    <para>
+        Workload Memory Protection puts &sap; instances into a dedicated cgroup (v2)
+        and tells the kernel by the <varname>memory.low</varname> parameter the amount of memory to keep
+        in physical memory.
+        This protects the processes in this cgroup against any form of memory pressure
+        outside that cgroup, including a growing page cache.
+        Workload Memory Protection can not protect against memory pressure inside this
+        cgroup. It covers the memory of <emphasis>all</emphasis> instances together on one
+        host.
+    </para>
+    <para>
+        The value for <varname>memory.low</varname> depends on the kind of &sap; instance
+        and the workload and has to be configured manually.
+        If the system is under extreme pressure the Linux kernel will ignore the
+        <varname>memory.low</varname> value and try to stabilize the whole system, even
+        by swapping or invoking the OOM killer.
     </para>
     <para>
         For more information about cgroups, see
@@ -42,13 +48,16 @@
                 <para>App Server (&netweaver;, &s4h;) or</para>
             </listitem>
             <listitem>
-                <para>&hana; 1/2</para>
+                <para>&hana; 1.0/2.0</para>
             </listitem>
         </itemizedlist>
 
         <para>
-            However, support for &suse;&#8217;s &ha; cluster solution is not yet
-            available.
+            Workload Memory Protection does not cover databases other than
+            &hana;. Depending on their start method the processes might run inside
+            or outside the dedicated cgroup.
+            If they run inside, the memory consumption has to be taken into account
+            when determine <varname>memory.low</varname>.
         </para>
 
         <important>
@@ -70,6 +79,11 @@
                         memory limit. If you have multiple &sap; systems (for
                         example, &netweaver; and &s4h;), WMP cannot shield one &sap;
                         application from the other. </para>
+                </listitem>
+                <listitem>
+                    <para>
+                        Support for &suse;’s HA cluster solution is not yet available.
+                    </para>
                 </listitem>
             </itemizedlist>
         </important>
@@ -144,24 +158,86 @@ chmod +s /usr/lib/sapwmp/sapwmp-capture</screen>
                         hierarchy is switched to v2 (unified hierarchy)
                         only.</para>
                 </step>
-                <step>
-                    <para>Configure MemoryLow for the <systemitem>SAP.slice</systemitem>:</para>
+                <step xml:id="st-conf-memorylow-sap-slice">
+                    <para>Configure <varname>MemoryLow</varname> for the <systemitem>SAP.slice</systemitem>:</para>
                     <screen>&prompt.sudo;<command>systemctl</command> set-property SAP.slice MemoryLow=...</screen>
                     <para>
                         This command creates a drop-in in
                             <filename>/etc/systemd/system.control/SAP.slice.d/</filename> to set
-                            MemoryLow.
+                            <varname>MemoryLow</varname>.
                     </para>
+                    <para>
+                        The <package>sapwmp</package> package includes the systemd configuration
+                        <systemitem>SAP.slice</systemitem> which creates the cgroup of the same name
+                        for the SAP instances. <varname>MemoryLow</varname> is the systemd aquivalent
+                        of the cgroup parameter
+                        <varname>memory.low</varname> mentioned in the introduction.
+                        The value for <varname>MemoryLow</varname> depends on the type of the
+                        &sap; application and the workload.
+                    </para>
+                    <variablelist>
+                        <varlistentry>
+                            <term>For &hana;</term>
+                            <listitem>
+                                <para>
+                                    Since &hana; has a Global Allocation Limit its value can
+                                    be used directly.
+                                </para>
+                            </listitem>
+                        </varlistentry>
+                        <varlistentry>
+                            <term>&sap; Application Server (&netweaver;, &s4h;)</term>
+                            <listitem>
+                                <para>
+                                    For the Application Server the sizing for the workload should
+                                    indicate the value for <varname>MemoryLow</varname>.
+                                    The <package>sapwmp</package> package contains a monitoring
+                                    part which might be useful to determine <varname>MemoryLow</varname>.
+                                    See <xref linkend="sec-memory-protection-operation-monitor-memory-usage"/>.
+                                </para>
+                            </listitem>
+                        </varlistentry>
+                    </variablelist>
+                    <para>
+                        Keep in mind:
+                    </para>
+                    <itemizedlist>
+                        <listitem>
+                            <para>
+                                All SAP instances on one host are inside the
+                                <systemitem>SAP.slice</systemitem>.
+                                <varname>MemoryLow</varname> must cover the amount
+                                of memory of <emphasis>all</emphasis> instances
+                                together on that host. You cannot protect &sap;
+                                systems or their instances from each other.
+                            </para>
+                        </listitem>
+                        <listitem>
+                            <para>
+                                If you are using a database other than &hana;
+                                some database processes might be part of
+                                <systemitem>SAP.slice</systemitem>. Their
+                                memory consumption has to be taken into
+                                account when determine the
+                                <varname>MemoryLow</varname> value.
+                            </para>
+                        </listitem>
+                        <listitem>
+                            <para>
+                                Never chose a value for <varname>MemoryLow</varname>
+                                very close or larger than your physical memory.
+                                System services and additional installed
+                                software require memory too. If they are forced
+                                to use swap to extensively in expense of the &sap;
+                                application, your system can become
+                                unresponsive.
+                            </para>
+                        </listitem>
+                    </itemizedlist>
                     <note>
-                        <title>Correctly Calculate MemoryLow Value</title>
+                        <title>Correctly Calculate <varname>MemoryLow</varname> Value</title>
                         <para>
-                        The value for MemoryLow is workload specific.
-                        Read the &sap; Note <link
-                         xlink:href="https://launchpad.support.sap.com/#/notes/1557506"
-                         >1557506 - Linux paging improvements</link> for
-                        how to calculate the correct value.
-                        </para>
-                        <para>MemoryLow takes the memory size in bytes. If
+                            <varname>MemoryLow</varname> takes the memory size in bytes. If
                         the value is suffixed with K, M, G or T, the
                         specified memory size is parsed as Kibibytes,
                         Mebibytes, Gibibytes, or Tebibytes (with the base
@@ -269,14 +345,13 @@ Directory /sys/fs/cgroup/SAP.slice:
 2020-06-16T18:41:28.319423+02:00 server-03 sapwmp-capture: Successful capture into SAP.slice/wmp-r07a27e12d7f2491f8ccb9aeb0e080aaa.scope
 2020-06-16T18:41:28.319672+02:00 server-03 systemd[1]: Started wmp-r07a27e12d7f2491f8ccb9aeb0e080aaa.scope.
 ...</screen>
+
                 </step>
             </procedure>
             <tip>
-                <para>You can find a script to verify your WMP setup here:
-                    <remark>TODO ADD LINK TO GITHUB
-                    TODO: QUESTION TO
-                    DOCUMENTATION TEAM: CAN/SHOULD WE PUT LINKS TO GITHUB IN THE
-                    OFFICIAL DOKU?</remark>
+                <para> You can find a script to verify your WMP setup here:
+                        <link
+                        xlink:href="https://github.com/scmschmidt/wmp_check"/>.
                 </para>
             </tip>
         </sect3>
@@ -307,11 +382,11 @@ PARENT_COMMANDS=sapstart,sapstartsrv</screen>
 
     <sect2 xml:id="sec-memory-protection-operation-change-the-value-of-memorylow">
         <title>Changing the Value of MemoryLow</title>
-        <para>To change the value of MemoryLow run:</para>
+        <para>To change the value of <varname>MemoryLow</varname> run:</para>
         <screen>&prompt.root;<command>systemctl</command> set-property SAP.slice MemoryLow=...</screen>
         <para>The changes will take effect immediately.</para>
         <important>
-            <para>Never set MemoryLow to a value lower than the memory
+            <para>Never set <varname>MemoryLow</varname> to a value lower than the memory
                 already accounted to <systemitem>SAP.slice</systemitem>. To check run:</para>
             <screen>&prompt.root;<command>systemctl</command> show -p MemoryCurrent SAP.slice</screen>
         </important>
@@ -391,20 +466,13 @@ system.slice : memory.low=0           memory.current=1863335936 memory.swap.curr
             you also have <varname>memory.swap.current</varname>, the amount of swapped out
             memory of the cgroup.
         </para>
-        <para>All values are in bytes.</para>
-        <para>
-            <emphasis role="strong">How to use this information to determine
-                MemoryLow for your system, read &sap; Note <link
-                    xlink:href="https://launchpad.support.sap.com/#/notes/1557506"
-                    >1557506 - Linux paging improvements</link></emphasis>
-        </para>
+        <para>All values are in bytes. See <xref linkend="st-conf-memorylow-sap-slice"/>
+            in <xref linkend="sec-memory-protection-setup-preparation"/>.</para>
+
         <tip>
             <para>You can find a script to print the information as table
                 or CSV here:
-                <remark>TODO ADD LINK TO GITHUB
-                TODO: IF
-                DOCUMENTATION TEAM AGREES, WE COULD ADD A LINK TO GITHUB
-                WITH A TOOL TO HELP ANALYSE THE LOG DATA</remark>
+                <link xlink:href="https://github.com/scmschmidt/wmp_log_extract"/>
             </para>
         </tip>
     </sect2>
@@ -467,7 +535,7 @@ ha0adm    3327 0::/SAP.slice/wmp-ra42489517eb846c282c57681e627a496.scope    saps
             </step>
             <step>
                 <para>Remove any changes made to <systemitem>SAP.slice</systemitem>
-                    like setting MemoryLow:</para>
+                    like setting <varname>MemoryLow</varname>:</para>
                 <screen>&prompt.root;<command>systemctl</command> revert SAP.slice</screen>
             </step>
             <step performance="optional">
@@ -498,11 +566,13 @@ ha0adm    3327 0::/SAP.slice/wmp-ra42489517eb846c282c57681e627a496.scope    saps
                     <filename>/usr/sap/<replaceable>SID</replaceable>/SYS/profile/</filename>):</para>
                 <screen>Execute_20 = local /usr/lib/sapwmp/sapwmp-capture -a</screen>
                 <important>
+                    <title>Backup is Necessary</title>
                     <para>Before editing an instance profile create a backup!
                         Errors in a profile can prevent a &sap; system from
                         starting!</para>
                 </important>
                 <important>
+                    <title>About Ediging Profiles Directly</title>
                     <para>Edit the instance profiles directly <emphasis
                         role="strong">only</emphasis> if you do not have
                         imported the profiles into the database to manage them
